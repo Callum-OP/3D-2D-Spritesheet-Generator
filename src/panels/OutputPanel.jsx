@@ -1,13 +1,13 @@
 import { useState } from 'react'
 import { useStore } from '../store.js'
 import { generateOutput } from '../three/scene.js'
-import { sheetDimensions, MAX_CANVAS_DIM } from '../three/spritesheet.js'
+import { sheetDimensions, stackedDimensions, MAX_CANVAS_DIM } from '../three/spritesheet.js'
 import { directionLabel } from '../three/captureCamera.js'
 
-// Side-panel section: turn the current model + motion into a packed spritesheet
-// and/or a zip of individual frames — one capture pass feeds both. Single
-// direction / combined model for now (per-mesh layers arrive later; see
-// references/Plan.md).
+// Side-panel section: turn the current model + motion into packed spritesheet(s)
+// and/or a zip of individual frames — one capture pass feeds every output. Can
+// shoot just the previewed direction or all N directions at once, laid out as
+// separate per-direction sheets or a single sheet with one band per direction.
 export default function OutputPanel() {
   const modelInfo = useStore((s) => s.modelInfo)
   const duration = useStore((s) => s.duration)
@@ -17,6 +17,8 @@ export default function OutputPanel() {
   const [cellSize, setCellSize] = useState(256)
   const [frameCount, setFrameCount] = useState(12)
   const [columns, setColumns] = useState(6)
+  const [scope, setScope] = useState('current') // 'current' | 'all'
+  const [layout, setLayout] = useState('stacked') // 'stacked' | 'separate' (all only)
   const [wantSheet, setWantSheet] = useState(true)
   const [wantFrames, setWantFrames] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -35,23 +37,37 @@ export default function OutputPanel() {
 
   const hasAnim = duration > 0
   const effectiveFrames = hasAnim ? Math.max(1, frameCount) : 1
-  const dims = sheetDimensions(effectiveFrames, columns, cellSize)
-  // The grid only matters when a packed sheet is requested.
+
+  // Which directions this run will cover.
+  const allDirections = scope === 'all' && angleCount > 1
+  const dirCount = allDirections ? angleCount : 1
+  const usingStacked = allDirections && layout === 'stacked'
+
+  // Sheet size depends on the layout: a stacked sheet stacks every direction's
+  // band; otherwise each direction (or the single one) is its own sheet.
+  const perDims = sheetDimensions(effectiveFrames, columns, cellSize)
+  const stackDims = stackedDimensions(effectiveFrames, columns, cellSize, dirCount)
+  const dims = usingStacked ? stackDims : perDims
   const tooBig = wantSheet && (dims.width > MAX_CANVAS_DIM || dims.height > MAX_CANVAS_DIM)
   const noOutput = !wantSheet && !wantFrames
+
+  const angleIndices = allDirections
+    ? Array.from({ length: angleCount }, (_, i) => i)
+    : [angleIndex]
 
   async function onGenerate() {
     if (busy || tooBig || noOutput) return
     setBusy(true)
     setMsg(null)
-    setProgress({ done: 0, total: effectiveFrames })
+    setProgress({ done: 0, total: effectiveFrames * dirCount })
     try {
       const res = await generateOutput(
         {
           cellSize,
           frameCount: effectiveFrames,
           columns,
-          angleIndex,
+          angleIndices,
+          angleLayout: layout,
           name: modelInfo.name || 'sprites',
           outputs: { sheet: wantSheet, frames: wantFrames },
         },
@@ -59,9 +75,15 @@ export default function OutputPanel() {
       )
       setPreview(res.preview)
       const parts = []
-      if (res.wroteSheet) parts.push('spritesheet PNG + JSON')
+      if (res.wroteSheet) {
+        if (allDirections) parts.push(usingStacked ? 'stacked sheet PNG + JSON' : 'per-direction sheets zip')
+        else parts.push('spritesheet PNG + JSON')
+      }
       if (res.wroteFrames) parts.push('frames zip')
-      setMsg(`Saved ${res.count} frame(s) (${directionLabel(angleIndex, angleCount)}): ${parts.join(' + ')}.`)
+      const where = allDirections
+        ? `${res.angles} directions`
+        : directionLabel(angleIndex, angleCount)
+      setMsg(`Saved ${res.count} frame(s) × ${where}: ${parts.join(' + ')}.`)
     } catch (err) {
       setMsg(err.message || String(err))
     } finally {
@@ -75,7 +97,7 @@ export default function OutputPanel() {
       <h2>Spritesheet</h2>
       <p className="panel-hint">
         Renders the current motion through the locked capture camera and packs the
-        frames into one aligned sheet.
+        frames into aligned sheet(s).
       </p>
 
       <NumberField
@@ -105,6 +127,48 @@ export default function OutputPanel() {
         onChange={setColumns}
       />
 
+      {/* Which directions to shoot */}
+      <div className="field-label" style={{ marginTop: 8 }}>Directions</div>
+      <div className="seg">
+        <button
+          className={'seg-btn' + (scope === 'current' ? ' active' : '')}
+          onClick={() => setScope('current')}
+          title="Only the direction previewed in the Capture panel"
+        >
+          Current
+        </button>
+        <button
+          className={'seg-btn' + (scope === 'all' ? ' active' : '')}
+          onClick={() => setScope('all')}
+          disabled={angleCount <= 1}
+          title={angleCount <= 1 ? 'Set more than one direction in the Capture panel' : `All ${angleCount} directions`}
+        >
+          All {angleCount > 1 ? `(${angleCount})` : ''}
+        </button>
+      </div>
+
+      {allDirections && wantSheet && (
+        <>
+          <div className="field-label" style={{ marginTop: 8 }}>Sheet layout</div>
+          <div className="seg">
+            <button
+              className={'seg-btn' + (layout === 'stacked' ? ' active' : '')}
+              onClick={() => setLayout('stacked')}
+              title="One sheet — each direction is its own band of rows"
+            >
+              Stacked rows
+            </button>
+            <button
+              className={'seg-btn' + (layout === 'separate' ? ' active' : '')}
+              onClick={() => setLayout('separate')}
+              title="One sheet per direction, bundled into a zip"
+            >
+              Separate (zip)
+            </button>
+          </div>
+        </>
+      )}
+
       <div className="field-label" style={{ marginTop: 8 }}>Output</div>
       <label className="toggle-row">
         <input type="checkbox" checked={wantSheet} onChange={(e) => setWantSheet(e.target.checked)} />
@@ -128,14 +192,17 @@ export default function OutputPanel() {
       )}
 
       <div className="info-row" style={{ marginTop: 8 }}>
-        <span>Direction</span>
-        <span>{directionLabel(angleIndex, angleCount)}</span>
+        <span>Directions</span>
+        <span>
+          {allDirections ? `${angleCount} (all)` : directionLabel(angleIndex, angleCount)}
+        </span>
       </div>
       {wantSheet && (
         <div className="info-row">
-          <span>Sheet size</span>
+          <span>{usingStacked ? 'Sheet size' : allDirections ? 'Each sheet' : 'Sheet size'}</span>
           <span style={{ color: tooBig ? '#ff8080' : undefined }}>
-            {dims.width}×{dims.height}px ({dims.cols}×{dims.rows})
+            {dims.width}×{dims.height}px ({dims.cols}×{usingStacked ? dims.totalRows : dims.rows})
+            {allDirections && !usingStacked ? ` × ${angleCount}` : ''}
           </span>
         </div>
       )}
@@ -143,7 +210,7 @@ export default function OutputPanel() {
       {tooBig && (
         <p className="panel-hint" style={{ color: '#ff8080' }}>
           Too large — browsers cap canvases near {MAX_CANVAS_DIM}px. Reduce the cell
-          size or use more columns.
+          size{usingStacked ? ', fewer directions,' : ''} or use more columns.
         </p>
       )}
 

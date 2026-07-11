@@ -1,4 +1,5 @@
 import { useStore } from '../store.js'
+import Slider from '../components/Slider.jsx'
 import { directionLabel } from '../three/captureCamera.js'
 import {
   fitCaptureRig,
@@ -203,23 +204,5 @@ export default function CapturePanel() {
         </>
       )}
     </div>
-  )
-}
-
-// A labelled range input with a live numeric readout.
-function Slider({ label, value, min, max, step, onChange, format }) {
-  return (
-    <label className="slider-row">
-      <span className="slider-label">{label}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-      <span className="slider-value">{format(value)}</span>
-    </label>
   )
 }

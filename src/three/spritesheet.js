@@ -25,6 +25,15 @@ export function sheetDimensions(count, columns, cell) {
   return { cols, rows, width: cols * cell, height: rows * cell }
 }
 
+// Pixel size of a STACKED sheet: each of `angleCount` directions gets its own
+// horizontal band (`framesPerAngle` frames laid out in `columns`), the bands
+// stacked top-to-bottom. Used by the UI to show/validate before generating.
+export function stackedDimensions(framesPerAngle, columns, cell, angleCount) {
+  const { cols, rows: rowsPerAngle } = computeGrid(framesPerAngle, columns)
+  const totalRows = rowsPerAngle * Math.max(1, angleCount)
+  return { cols, rowsPerAngle, totalRows, width: cols * cell, height: totalRows * cell }
+}
+
 // Pack frame canvases into one sheet. `frames[i]` is drawn into cell i.
 export function packSheet(frames, { cell, columns }) {
   const { cols, rows } = computeGrid(frames.length, columns)
@@ -39,6 +48,53 @@ export function packSheet(frames, { cell, columns }) {
     ctx.drawImage(frame, 0, 0, frame.width, frame.height, col * cell, row * cell, cell, cell)
   })
   return { canvas, cols, rows, width: canvas.width, height: canvas.height }
+}
+
+// Pack multiple directions into ONE stacked sheet: each direction is its own
+// band of `rowsPerAngle` rows, bands laid out top-to-bottom in `framesByAngle`
+// order. Every frame is shot with the same frozen capture camera, so a band's
+// cells align with the matching cells in every other band. `framesByAngle[a][i]`
+// is direction a's frame i.
+export function packStacked(framesByAngle, { cell, columns }) {
+  const angleCount = framesByAngle.length
+  const per = framesByAngle[0]?.length || 0
+  const cols = Math.max(1, Math.min(columns, per || 1))
+  const rowsPerAngle = Math.ceil(Math.max(1, per) / cols)
+  const totalRows = rowsPerAngle * angleCount
+  const canvas = document.createElement('canvas')
+  canvas.width = cols * cell
+  canvas.height = totalRows * cell
+  const ctx = canvas.getContext('2d')
+  ctx.clearRect(0, 0, canvas.width, canvas.height) // stay transparent
+  framesByAngle.forEach((frames, a) => {
+    const rowBase = a * rowsPerAngle
+    frames.forEach((frame, i) => {
+      const col = i % cols
+      const row = rowBase + Math.floor(i / cols)
+      ctx.drawImage(frame, 0, 0, frame.width, frame.height, col * cell, row * cell, cell, cell)
+    })
+  })
+  return { canvas, cols, rowsPerAngle, totalRows, angleCount, width: canvas.width, height: canvas.height }
+}
+
+// Metadata sidecar for a stacked (all-directions) sheet. Each entry in `angles`
+// ({ index, label }) maps to one band; band a occupies rows [a*rowsPerAngle,
+// (a+1)*rowsPerAngle). `count` is the per-direction frame count.
+export function buildStackedMeta({ name, cell, cols, rowsPerAngle, count, fps, angles, times, width, height }) {
+  return {
+    format: 'spritesheet-stacked-v1',
+    source: name,
+    cell,
+    columns: cols,
+    rowsPerAngle,
+    count,
+    fps: fps || null,
+    width,
+    height,
+    layout: 'stacked-by-direction',
+    angles, // band order, top-to-bottom
+    frameTimes: times.map((t) => Math.round(t * 1000) / 1000),
+  }
 }
 
 // Metadata sidecar describing the sheet, enough to slice it back apart.

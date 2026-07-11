@@ -55,7 +55,14 @@ import {
 } from './captureCamera.js'
 import { scrub } from './animation.js'
 import { setBonesVisible } from './posing.js'
-import { packSheet, buildMeta, canvasToBlob, makePreviewDataURL } from './spritesheet.js'
+import {
+  packSheet,
+  packStacked,
+  buildMeta,
+  buildStackedMeta,
+  canvasToBlob,
+  makePreviewDataURL,
+} from './spritesheet.js'
 import { zipToBlob, padIndex, jsonBytes } from '../export/zip.js'
 import { useStore } from '../store.js'
 
@@ -509,12 +516,15 @@ function sampleTimes(count) {
   return times
 }
 
-// Render each sampled frame through the frozen ortho camera into its own square
-// canvas at exactly `cellSize` px. Helpers (grid/shadow/guides/bones) and any
-// solid background are hidden so sprites come out clean and transparent, then
-// everything is restored. Yields to the event loop between frames so a progress
-// bar can update. Returns an array of HTMLCanvasElement (one per frame).
-async function renderSpriteFrames({ cellSize, times, angleIndex, onProgress }) {
+// Render every sampled frame, for each requested direction, through the frozen
+// ortho camera into its own square canvas at exactly `cellSize` px. Helpers
+// (grid/shadow/guides/bones) and any solid background are hidden so sprites come
+// out clean and transparent, then everything is restored. The camera frustum is
+// frozen throughout and only ORBITS between directions, so every direction's
+// cells align pixel-for-pixel. Yields to the event loop between frames so a
+// progress bar can update. Returns HTMLCanvasElement[][] — one array per
+// direction, in `angleIndices` order.
+async function renderSpriteFrames({ cellSize, times, angleIndices, onProgress }) {
   const { renderer, container, scene } = state
   const w0 = container.clientWidth || 1
   const h0 = container.clientHeight || 1
@@ -537,21 +547,26 @@ async function renderSpriteFrames({ cellSize, times, angleIndex, onProgress }) {
   setGuidesVisible(false)
   setBonesVisible(false)
   applyFrustum(1) // exact square — the real capture, not the preview aspect
-  setAngleIndex(angleIndex)
   renderer.setSize(cellSize, cellSize, false) // bigger/smaller buffer, keep CSS size
 
-  const frames = []
+  const framesByAngle = angleIndices.map(() => [])
+  const total = angleIndices.length * times.length
+  let done = 0
   try {
-    for (let i = 0; i < times.length; i++) {
-      scrub(times[i]) // pose the rig at this time (no-op if nothing is armed)
-      renderOnce() // synchronous draw; preserveDrawingBuffer keeps the pixels
-      const cell = document.createElement('canvas')
-      cell.width = cellSize
-      cell.height = cellSize
-      cell.getContext('2d').drawImage(renderer.domElement, 0, 0)
-      frames.push(cell)
-      if (onProgress) onProgress(i + 1, times.length)
-      await new Promise((r) => setTimeout(r, 0)) // let the UI breathe
+    for (let a = 0; a < angleIndices.length; a++) {
+      setAngleIndex(angleIndices[a]) // orbit only — frustum size unchanged
+      for (let i = 0; i < times.length; i++) {
+        scrub(times[i]) // pose the rig at this time (no-op if nothing is armed)
+        renderOnce() // synchronous draw; preserveDrawingBuffer keeps the pixels
+        const cell = document.createElement('canvas')
+        cell.width = cellSize
+        cell.height = cellSize
+        cell.getContext('2d').drawImage(renderer.domElement, 0, 0)
+        framesByAngle[a].push(cell)
+        done++
+        if (onProgress) onProgress(done, total)
+        await new Promise((r) => setTimeout(r, 0)) // let the UI breathe
+      }
     }
   } finally {
     // --- Restore everything ---
@@ -564,81 +579,191 @@ async function renderSpriteFrames({ cellSize, times, angleIndex, onProgress }) {
     setGuidesVisible(useStore.getState().showAngleGuides)
     setBonesVisible(useStore.getState().showBones)
     if (prev.captureMode) applyFrustum(w0 / h0) // back to on-screen preview aspect
+    setAngleIndex(state.captureAngle) // restore the previewed direction
     scrub(useStore.getState().currentTime || 0) // leave the rig where the user had it
     requestRender()
   }
-  return frames
+  return framesByAngle
 }
 
-// Full pipeline: capture the current motion at one direction ONCE, then emit a
-// packed spritesheet (PNG + JSON) and/or a zip of individual frames (+ manifest),
-// per `opts.outputs`. Returns { count, wroteSheet, wroteFrames, preview } where
-// preview is a small data-URL thumbnail. `onProgress(done, total)`.
+// Turn a direction label into a filesystem-safe slug ("Side (E)" -> "Side_E").
+function slugLabel(s) {
+  return String(s).replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '') || 'dir'
+}
+
+// Full pipeline: capture the current motion across one or more directions ONCE,
+// then emit packed spritesheet(s) (PNG + JSON) and/or a zip of individual frames
+// (+ manifest), per `opts.outputs`.
+//
+// Directions come from `opts.angleIndices` (defaults to the single previewed
+// `opts.angleIndex`). With several directions, `opts.angleLayout` chooses:
+//   'stacked'  → one sheet, each direction its own band of rows (single PNG+JSON)
+//   'separate' → one sheet per direction, bundled into a `_sheets_.zip`
+// The frames zip nests each direction under its own subfolder when multi.
+//
+// Returns { count, angles, wroteSheet, wroteFrames, preview }.
+// `onProgress(done, total)`.
 export async function generateOutput(opts, onProgress) {
   if (!state.currentModel) throw new Error('Load a model first.')
-  const { cellSize, frameCount, columns, angleIndex, name } = opts
+  const { cellSize, frameCount, columns, name } = opts
   const wantSheet = opts.outputs?.sheet !== false
   const wantFrames = !!opts.outputs?.frames
   if (!wantSheet && !wantFrames) throw new Error('Pick at least one output.')
   if (!getRig()) fitCaptureRig()
 
+  const angleCount = getRig().angleCount
+  // Normalise the requested directions to valid, in-range, de-duplicated indices.
+  const requested =
+    Array.isArray(opts.angleIndices) && opts.angleIndices.length
+      ? opts.angleIndices
+      : [opts.angleIndex || 0]
+  const angleIndices = [...new Set(requested.map((i) => ((i % angleCount) + angleCount) % angleCount))]
+  const multi = angleIndices.length > 1
+  const layout = opts.angleLayout === 'stacked' ? 'stacked' : 'separate'
+
   const times = sampleTimes(frameCount)
-  // One capture pass feeds both outputs — never render the model twice.
-  const frames = await renderSpriteFrames({ cellSize, times, angleIndex, onProgress })
+  // One capture pass feeds every output — never render the model twice.
+  const framesByAngle = await renderSpriteFrames({ cellSize, times, angleIndices, onProgress })
+  const per = framesByAngle[0].length // frames per direction (same for all)
 
   const dur = useStore.getState().duration || 0
-  const fps = dur > 0 ? Math.round((frames.length / dur) * 100) / 100 : null
-  const angle = { index: angleIndex, label: directionLabel(angleIndex, getRig().angleCount) }
+  const fps = dur > 0 ? Math.round((per / dur) * 100) / 100 : null
+  const angles = angleIndices.map((idx) => ({ index: idx, label: directionLabel(idx, angleCount) }))
   const roundedTimes = times.map((t) => Math.round(t * 1000) / 1000)
   const stamp = timestamp()
   let preview = null
 
   if (wantSheet) {
-    const packed = packSheet(frames, { cell: cellSize, columns })
-    const meta = buildMeta({
-      name,
-      cell: cellSize,
-      cols: packed.cols,
-      rows: packed.rows,
-      count: frames.length,
-      fps,
-      angle,
-      times,
-      width: packed.width,
-      height: packed.height,
-    })
-    downloadBlob(await canvasToBlob(packed.canvas), `${name}_sheet_${stamp}.png`)
-    downloadBlob(
-      new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' }),
-      `${name}_sheet_${stamp}.json`,
-    )
-    preview = makePreviewDataURL(packed.canvas, 320)
+    if (multi && layout === 'stacked') {
+      const packed = packStacked(framesByAngle, { cell: cellSize, columns })
+      const meta = buildStackedMeta({
+        name,
+        cell: cellSize,
+        cols: packed.cols,
+        rowsPerAngle: packed.rowsPerAngle,
+        count: per,
+        fps,
+        angles,
+        times,
+        width: packed.width,
+        height: packed.height,
+      })
+      downloadBlob(await canvasToBlob(packed.canvas), `${name}_sheet_stacked_${stamp}.png`)
+      downloadBlob(
+        new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' }),
+        `${name}_sheet_stacked_${stamp}.json`,
+      )
+      preview = makePreviewDataURL(packed.canvas, 320)
+    } else if (multi) {
+      // Separate sheet per direction — bundle so it's one download, not 2×N.
+      const files = {}
+      const sheets = []
+      for (let a = 0; a < angleIndices.length; a++) {
+        const packed = packSheet(framesByAngle[a], { cell: cellSize, columns })
+        const base = `dir_${angles[a].index}_${slugLabel(angles[a].label)}`
+        const meta = buildMeta({
+          name,
+          cell: cellSize,
+          cols: packed.cols,
+          rows: packed.rows,
+          count: per,
+          fps,
+          angle: angles[a],
+          times,
+          width: packed.width,
+          height: packed.height,
+        })
+        files[`${base}.png`] = new Uint8Array(await (await canvasToBlob(packed.canvas)).arrayBuffer())
+        files[`${base}.json`] = jsonBytes(meta)
+        sheets.push({ index: angles[a].index, label: angles[a].label, file: `${base}.png` })
+        if (a === 0) preview = makePreviewDataURL(packed.canvas, 320)
+      }
+      files['sheets.json'] = jsonBytes({
+        format: 'spritesheets-v1',
+        source: name,
+        cell: cellSize,
+        columns,
+        count: per,
+        fps,
+        layout: 'separate',
+        frameTimes: roundedTimes,
+        sheets,
+      })
+      downloadBlob(await zipToBlob(files), `${name}_sheets_${stamp}.zip`)
+    } else {
+      // Single direction — loose PNG + JSON (unchanged from Phase 2/3).
+      const packed = packSheet(framesByAngle[0], { cell: cellSize, columns })
+      const meta = buildMeta({
+        name,
+        cell: cellSize,
+        cols: packed.cols,
+        rows: packed.rows,
+        count: per,
+        fps,
+        angle: angles[0],
+        times,
+        width: packed.width,
+        height: packed.height,
+      })
+      downloadBlob(await canvasToBlob(packed.canvas), `${name}_sheet_${stamp}.png`)
+      downloadBlob(
+        new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' }),
+        `${name}_sheet_${stamp}.json`,
+      )
+      preview = makePreviewDataURL(packed.canvas, 320)
+    }
   }
 
   if (wantFrames) {
     const files = {}
-    const fileNames = []
-    for (let i = 0; i < frames.length; i++) {
-      const blob = await canvasToBlob(frames[i])
-      const fname = `frames/frame_${padIndex(i, frames.length)}.png`
-      files[fname] = new Uint8Array(await blob.arrayBuffer())
-      fileNames.push(fname)
+    const directions = []
+    for (let a = 0; a < angleIndices.length; a++) {
+      const frames = framesByAngle[a]
+      // Nest per-direction only when there's more than one, so single-direction
+      // zips stay `frames/frame_NNN.png` (unchanged from Phase 3).
+      const dir = multi ? `frames/dir_${angles[a].index}_${slugLabel(angles[a].label)}` : 'frames'
+      const fileNames = []
+      for (let i = 0; i < frames.length; i++) {
+        const blob = await canvasToBlob(frames[i])
+        const fname = `${dir}/frame_${padIndex(i, frames.length)}.png`
+        files[fname] = new Uint8Array(await blob.arrayBuffer())
+        fileNames.push(fname)
+      }
+      directions.push({ index: angles[a].index, label: angles[a].label, dir, files: fileNames })
     }
-    files['manifest.json'] = jsonBytes({
-      format: 'frames-v1',
-      source: name,
-      cell: cellSize,
-      count: frames.length,
-      fps,
-      angle,
-      frameTimes: roundedTimes,
-      files: fileNames,
-    })
+    files['manifest.json'] = jsonBytes(
+      multi
+        ? {
+            format: 'frames-multi-v1',
+            source: name,
+            cell: cellSize,
+            count: per,
+            fps,
+            frameTimes: roundedTimes,
+            directions,
+          }
+        : {
+            format: 'frames-v1',
+            source: name,
+            cell: cellSize,
+            count: per,
+            fps,
+            angle: angles[0],
+            frameTimes: roundedTimes,
+            files: directions[0].files,
+          },
+    )
     downloadBlob(await zipToBlob(files), `${name}_frames_${stamp}.zip`)
-    if (!preview) preview = makePreviewDataURL(frames[0], 320)
+    if (!preview) preview = makePreviewDataURL(framesByAngle[0][0], 320)
   }
 
-  return { count: frames.length, wroteSheet: wantSheet, wroteFrames: wantFrames, preview }
+  return {
+    count: per,
+    angles: angles.length,
+    wroteSheet: wantSheet,
+    wroteFrames: wantFrames,
+    preview,
+  }
 }
 
 // ---------------------------------------------------------------------------

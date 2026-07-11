@@ -16,6 +16,7 @@ import {
   bakeClipToTracks,
 } from '../three/animation.js'
 import { getBoneQuaternion, getPosedBones, applyPose } from '../three/posing.js'
+import Slider from '../components/Slider.jsx'
 
 // Collect every keyframe time across all joints + the character position, with a
 // count of what's keyed at each — for the overview/manage list.
@@ -478,18 +479,17 @@ export default function AnimationPanel() {
           <input type="checkbox" checked={loop} onChange={(e) => onLoop(e.target.checked)} />
           Loop
         </label>
-        <label className="slider-row" style={{ flex: 1 }}>
-          <span className="slider-label">Speed</span>
-          <input
-            type="range"
+        <div style={{ flex: 1 }}>
+          <Slider
+            label="Speed"
+            value={speed}
             min={0.1}
             max={2}
             step={0.1}
-            value={speed}
-            onChange={(e) => onSpeed(Number(e.target.value))}
+            onChange={onSpeed}
+            format={(v) => `${v.toFixed(1)}×`}
           />
-          <span className="slider-value">{speed.toFixed(1)}×</span>
-        </label>
+        </div>
       </div>
 
       {/* In-app keyframe editor */}
@@ -528,18 +528,15 @@ export default function AnimationPanel() {
             </label>
           </div>
 
-          <label className="slider-row">
-            <span className="slider-label">Insert at</span>
-            <input
-              type="range"
-              min={0}
-              max={animDuration}
-              step={1 / animFps}
-              value={insertTime}
-              onChange={(e) => st().setInsertTime(Number(e.target.value))}
-            />
-            <span className="slider-value">{insertTime.toFixed(2)}s</span>
-          </label>
+          <Slider
+            label="Insert at"
+            value={insertTime}
+            min={0}
+            max={animDuration}
+            step={1 / animFps}
+            onChange={(v) => st().setInsertTime(v)}
+            format={(v) => `${v.toFixed(2)}s`}
+          />
 
           <div className="kf-actions">
             <button

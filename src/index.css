@@ -430,6 +430,29 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Click the readout to type an exact value (see components/Slider.jsx). */
+.slider-value.editable {
+  cursor: text;
+}
+
+.slider-value.editable:hover {
+  color: var(--accent);
+  text-decoration: underline dotted;
+}
+
+.slider-value-edit {
+  width: 100%;
+  min-width: 0;
+  font-size: 11px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 2px;
+}
+
 /* --- Per-mesh override list --- */
 .mesh-list {
   max-height: 180px;

@@ -1,4 +1,5 @@
 import { useStore } from '../store.js'
+import Slider from '../components/Slider.jsx'
 
 // Side-panel section: material mode + key-light controls (Phase 2).
 // Unlit shows raw Blender colours (no lighting), Toon adds stepped anime shading,
@@ -251,24 +252,5 @@ export default function MaterialPanel() {
         </div>
       )}
     </div>
-  )
-}
-
-// A labelled range input with a live numeric readout.
-function Slider({ label, value, min, max, step, disabled, onChange, format }) {
-  return (
-    <label className="slider-row">
-      <span className="slider-label">{label}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-      <span className="slider-value">{format(value)}</span>
-    </label>
   )
 }
