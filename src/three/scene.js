@@ -516,15 +516,50 @@ function sampleTimes(count) {
   return times
 }
 
-// Render every sampled frame, for each requested direction, through the frozen
-// ortho camera into its own square canvas at exactly `cellSize` px. Helpers
-// (grid/shadow/guides/bones) and any solid background are hidden so sprites come
-// out clean and transparent, then everything is restored. The camera frustum is
-// frozen throughout and only ORBITS between directions, so every direction's
+// Show only the meshes in `uuids` (a Set) — the layer-isolation primitive. A
+// null Set means "show everything". Meshes the user hid globally
+// (meshOverrides.visible === false) stay hidden either way, so a hidden helper
+// never sneaks into a layer. See three/layers.js.
+function applyLayerVisibility(uuids) {
+  if (!state.currentModel) return
+  const ov = useStore.getState().meshOverrides || {}
+  for (const mesh of state.currentModel.meshes) {
+    const hidden = ov[mesh.uuid] && ov[mesh.uuid].visible === false
+    mesh.visible = hidden ? false : uuids ? uuids.has(mesh.uuid) : true
+  }
+}
+
+// Put mesh visibility back to what the store says (undoes applyLayerVisibility).
+function restoreLayerVisibility() {
+  if (!state.currentModel) return
+  const ov = useStore.getState().meshOverrides || {}
+  for (const mesh of state.currentModel.meshes) {
+    mesh.visible = !(ov[mesh.uuid] && ov[mesh.uuid].visible === false)
+  }
+}
+
+// Live-viewport solo preview: show only `uuids` (Set) so the user can flip
+// through layers and confirm alignment under the locked capture camera. Pass
+// null to restore. Non-destructive — it doesn't touch the store, so any later
+// material change re-applies the user's real visibility.
+export function previewLayerSolo(uuids) {
+  if (uuids) applyLayerVisibility(uuids)
+  else restoreLayerVisibility()
+  requestRender()
+}
+
+// Render every sampled frame, for each requested LAYER and direction, through
+// the frozen ortho camera into its own square canvas at exactly `cellSize` px.
+// Helpers (grid/shadow/guides/bones) and any solid background are hidden so
+// sprites come out clean and transparent, then everything is restored. The
+// camera frustum is frozen throughout and only ORBITS between directions — and
+// layers differ ONLY by which meshes are visible — so every layer/direction's
 // cells align pixel-for-pixel. Yields to the event loop between frames so a
-// progress bar can update. Returns HTMLCanvasElement[][] — one array per
-// direction, in `angleIndices` order.
-async function renderSpriteFrames({ cellSize, times, angleIndices, onProgress }) {
+// progress bar can update.
+//
+// `layers` is [{ key, label, uuids: Set|null }]. Returns
+// HTMLCanvasElement[layerIndex][angleIndex] = frame canvases.
+async function renderSpriteFrames({ cellSize, times, angleIndices, layers, onProgress }) {
   const { renderer, container, scene } = state
   const w0 = container.clientWidth || 1
   const h0 = container.clientHeight || 1
@@ -549,27 +584,31 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, onProgress })
   applyFrustum(1) // exact square — the real capture, not the preview aspect
   renderer.setSize(cellSize, cellSize, false) // bigger/smaller buffer, keep CSS size
 
-  const framesByAngle = angleIndices.map(() => [])
-  const total = angleIndices.length * times.length
+  const framesByLayer = layers.map(() => angleIndices.map(() => []))
+  const total = layers.length * angleIndices.length * times.length
   let done = 0
   try {
-    for (let a = 0; a < angleIndices.length; a++) {
-      setAngleIndex(angleIndices[a]) // orbit only — frustum size unchanged
-      for (let i = 0; i < times.length; i++) {
-        scrub(times[i]) // pose the rig at this time (no-op if nothing is armed)
-        renderOnce() // synchronous draw; preserveDrawingBuffer keeps the pixels
-        const cell = document.createElement('canvas')
-        cell.width = cellSize
-        cell.height = cellSize
-        cell.getContext('2d').drawImage(renderer.domElement, 0, 0)
-        framesByAngle[a].push(cell)
-        done++
-        if (onProgress) onProgress(done, total)
-        await new Promise((r) => setTimeout(r, 0)) // let the UI breathe
+    for (let L = 0; L < layers.length; L++) {
+      applyLayerVisibility(layers[L].uuids) // isolate this layer (visibility only)
+      for (let a = 0; a < angleIndices.length; a++) {
+        setAngleIndex(angleIndices[a]) // orbit only — frustum size unchanged
+        for (let i = 0; i < times.length; i++) {
+          scrub(times[i]) // pose the rig at this time (no-op if nothing is armed)
+          renderOnce() // synchronous draw; preserveDrawingBuffer keeps the pixels
+          const cell = document.createElement('canvas')
+          cell.width = cellSize
+          cell.height = cellSize
+          cell.getContext('2d').drawImage(renderer.domElement, 0, 0)
+          framesByLayer[L][a].push(cell)
+          done++
+          if (onProgress) onProgress(done, total)
+          await new Promise((r) => setTimeout(r, 0)) // let the UI breathe
+        }
       }
     }
   } finally {
     // --- Restore everything ---
+    restoreLayerVisibility()
     renderer.setSize(w0, h0, false)
     state.captureMode = prev.captureMode
     scene.background = prev.background
@@ -583,7 +622,7 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, onProgress })
     scrub(useStore.getState().currentTime || 0) // leave the rig where the user had it
     requestRender()
   }
-  return framesByAngle
+  return framesByLayer
 }
 
 // Turn a direction label into a filesystem-safe slug ("Side (E)" -> "Side_E").
@@ -591,9 +630,9 @@ function slugLabel(s) {
   return String(s).replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '') || 'dir'
 }
 
-// Full pipeline: capture the current motion across one or more directions ONCE,
-// then emit packed spritesheet(s) (PNG + JSON) and/or a zip of individual frames
-// (+ manifest), per `opts.outputs`.
+// Full pipeline: capture the current motion across one or more directions — and
+// one or more layers — ONCE, then emit packed spritesheet(s) (PNG + JSON) and/or
+// a zip of individual frames (+ manifest), per `opts.outputs`.
 //
 // Directions come from `opts.angleIndices` (defaults to the single previewed
 // `opts.angleIndex`). With several directions, `opts.angleLayout` chooses:
@@ -601,7 +640,12 @@ function slugLabel(s) {
 //   'separate' → one sheet per direction, bundled into a `_sheets_.zip`
 // The frames zip nests each direction under its own subfolder when multi.
 //
-// Returns { count, angles, wroteSheet, wroteFrames, preview }.
+// Layers (Phase 5) come from `opts.layers = { enabled, groups:[{label,uuids}],
+// combined }`. When enabled, each selected part is captured as its own aligned
+// sheet (same frozen camera, so they overlay exactly) and everything is bundled
+// into per-layer folders in a zip, plus an optional "Combined" layer.
+//
+// Returns { count, angles, layers, wroteSheet, wroteFrames, preview }.
 // `onProgress(done, total)`.
 export async function generateOutput(opts, onProgress) {
   if (!state.currentModel) throw new Error('Load a model first.')
@@ -621,16 +665,35 @@ export async function generateOutput(opts, onProgress) {
   const multi = angleIndices.length > 1
   const layout = opts.angleLayout === 'stacked' ? 'stacked' : 'separate'
 
+  // Layers to isolate (Phase 5). Absent/empty => a single combined capture that
+  // reproduces the Phase 4 behaviour exactly.
+  const groups = Array.isArray(opts.layers?.groups)
+    ? opts.layers.groups.filter((g) => g.uuids && g.uuids.length)
+    : []
+  const layered = !!(opts.layers?.enabled && groups.length)
+  const targets = layered
+    ? buildTargets(groups, opts.layers.combined)
+    : [{ key: 'all', label: 'All', uuids: null }]
+
   const times = sampleTimes(frameCount)
   // One capture pass feeds every output — never render the model twice.
-  const framesByAngle = await renderSpriteFrames({ cellSize, times, angleIndices, onProgress })
-  const per = framesByAngle[0].length // frames per direction (same for all)
+  const framesByLayer = await renderSpriteFrames({ cellSize, times, angleIndices, layers: targets, onProgress })
+  const per = framesByLayer[0][0].length // frames per direction (same for all)
 
   const dur = useStore.getState().duration || 0
   const fps = dur > 0 ? Math.round((per / dur) * 100) / 100 : null
   const angles = angleIndices.map((idx) => ({ index: idx, label: directionLabel(idx, angleCount) }))
   const roundedTimes = times.map((t) => Math.round(t * 1000) / 1000)
   const stamp = timestamp()
+
+  // Layered exports always bundle into per-layer folders in a zip.
+  if (layered) {
+    const ctx = { cellSize, columns, layout, multi, per, fps, angles, times, roundedTimes, name }
+    return await emitLayeredOutput({ framesByLayer, targets, wantSheet, wantFrames, ctx, stamp })
+  }
+
+  // ---- Single combined capture (Phase 4 path: loose files / per-direction zip) ----
+  const framesByAngle = framesByLayer[0]
   let preview = null
 
   if (wantSheet) {
@@ -760,6 +823,174 @@ export async function generateOutput(opts, onProgress) {
   return {
     count: per,
     angles: angles.length,
+    layers: 1,
+    wroteSheet: wantSheet,
+    wroteFrames: wantFrames,
+    preview,
+  }
+}
+
+// PNG bytes for a canvas, ready to drop into a zip.
+async function pngBytes(canvas) {
+  return new Uint8Array(await (await canvasToBlob(canvas)).arrayBuffer())
+}
+
+// Turn selected layer groups into capture targets. Each target is a Set of the
+// mesh UUIDs to show. When "combined" is on (and there's more than one layer) an
+// extra target with every selected mesh visible is appended.
+function buildTargets(groups, combined) {
+  const targets = groups.map((g) => ({
+    key: `layer_${slugLabel(g.label)}`,
+    label: g.label,
+    uuids: new Set(g.uuids),
+  }))
+  if (combined && groups.length > 1) {
+    const all = new Set()
+    for (const g of groups) for (const u of g.uuids) all.add(u)
+    targets.push({ key: 'combined', label: 'Combined', uuids: all })
+  }
+  return targets
+}
+
+// Pack one layer's captured frames into sheet file(s) under `prefix/`, following
+// the same direction-layout rules as the single-capture path (stacked band /
+// separate per-direction / single). Returns { files: {path: bytes}, preview }.
+async function buildAngleSheetFiles(framesByAngle, ctx, prefix) {
+  const { cellSize, columns, layout, multi, per, fps, angles, times, name } = ctx
+  const p = prefix ? prefix.replace(/\/+$/, '') + '/' : ''
+  const files = {}
+  let preview = null
+
+  if (multi && layout === 'stacked') {
+    const packed = packStacked(framesByAngle, { cell: cellSize, columns })
+    files[`${p}sheet_stacked.png`] = await pngBytes(packed.canvas)
+    files[`${p}sheet_stacked.json`] = jsonBytes(
+      buildStackedMeta({
+        name,
+        cell: cellSize,
+        cols: packed.cols,
+        rowsPerAngle: packed.rowsPerAngle,
+        count: per,
+        fps,
+        angles,
+        times,
+        width: packed.width,
+        height: packed.height,
+      }),
+    )
+    preview = makePreviewDataURL(packed.canvas, 320)
+  } else if (multi) {
+    for (let a = 0; a < angles.length; a++) {
+      const packed = packSheet(framesByAngle[a], { cell: cellSize, columns })
+      const base = `dir_${angles[a].index}_${slugLabel(angles[a].label)}`
+      files[`${p}${base}.png`] = await pngBytes(packed.canvas)
+      files[`${p}${base}.json`] = jsonBytes(
+        buildMeta({
+          name,
+          cell: cellSize,
+          cols: packed.cols,
+          rows: packed.rows,
+          count: per,
+          fps,
+          angle: angles[a],
+          times,
+          width: packed.width,
+          height: packed.height,
+        }),
+      )
+      if (a === 0) preview = makePreviewDataURL(packed.canvas, 320)
+    }
+  } else {
+    const packed = packSheet(framesByAngle[0], { cell: cellSize, columns })
+    files[`${p}sheet.png`] = await pngBytes(packed.canvas)
+    files[`${p}sheet.json`] = jsonBytes(
+      buildMeta({
+        name,
+        cell: cellSize,
+        cols: packed.cols,
+        rows: packed.rows,
+        count: per,
+        fps,
+        angle: angles[0],
+        times,
+        width: packed.width,
+        height: packed.height,
+      }),
+    )
+    preview = makePreviewDataURL(packed.canvas, 320)
+  }
+  return { files, preview }
+}
+
+// Emit a layered export: every layer (+ optional Combined) as its own aligned
+// sheet/frames, bundled into per-layer folders in one zip each. Because every
+// layer was shot with the same frozen camera, shirt/ overlays body/ exactly.
+async function emitLayeredOutput({ framesByLayer, targets, wantSheet, wantFrames, ctx, stamp }) {
+  const { cellSize, columns, layout, multi, per, fps, angles, roundedTimes, name } = ctx
+  let preview = null
+
+  if (wantSheet) {
+    const files = {}
+    const layers = []
+    for (let L = 0; L < targets.length; L++) {
+      const dir = slugLabel(targets[L].label)
+      const built = await buildAngleSheetFiles(framesByLayer[L], ctx, dir)
+      Object.assign(files, built.files)
+      layers.push({ layer: targets[L].label, key: targets[L].key, dir })
+      if (!preview) preview = built.preview
+    }
+    files['layers.json'] = jsonBytes({
+      format: 'spritesheets-layered-v1',
+      source: name,
+      cell: cellSize,
+      columns,
+      count: per,
+      fps,
+      directionLayout: multi ? layout : 'single',
+      angles,
+      frameTimes: roundedTimes,
+      layers,
+    })
+    downloadBlob(await zipToBlob(files), `${name}_layers_${stamp}.zip`)
+  }
+
+  if (wantFrames) {
+    const files = {}
+    const layers = []
+    for (let L = 0; L < targets.length; L++) {
+      const layerDir = slugLabel(targets[L].label)
+      const directions = []
+      for (let a = 0; a < angles.length; a++) {
+        const frames = framesByLayer[L][a]
+        // Nest per-direction only when there's more than one.
+        const sub = multi ? `${layerDir}/dir_${angles[a].index}_${slugLabel(angles[a].label)}` : layerDir
+        const fileNames = []
+        for (let i = 0; i < frames.length; i++) {
+          const fname = `${sub}/frame_${padIndex(i, frames.length)}.png`
+          files[fname] = await pngBytes(frames[i])
+          fileNames.push(fname)
+        }
+        directions.push({ index: angles[a].index, label: angles[a].label, dir: sub, files: fileNames })
+      }
+      layers.push({ layer: targets[L].label, key: targets[L].key, directions })
+    }
+    files['manifest.json'] = jsonBytes({
+      format: 'frames-layered-v1',
+      source: name,
+      cell: cellSize,
+      count: per,
+      fps,
+      frameTimes: roundedTimes,
+      layers,
+    })
+    downloadBlob(await zipToBlob(files), `${name}_layer_frames_${stamp}.zip`)
+    if (!preview) preview = makePreviewDataURL(framesByLayer[0][0][0], 320)
+  }
+
+  return {
+    count: per,
+    angles: angles.length,
+    layers: targets.length,
     wroteSheet: wantSheet,
     wroteFrames: wantFrames,
     preview,

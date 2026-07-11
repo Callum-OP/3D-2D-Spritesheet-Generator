@@ -473,6 +473,11 @@ body {
   text-decoration: line-through;
 }
 
+.mesh-row.layer-solo .mesh-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .mesh-head {
   font-size: 10px;
   text-transform: uppercase;

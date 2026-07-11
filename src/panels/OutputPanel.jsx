@@ -3,6 +3,7 @@ import { useStore } from '../store.js'
 import { generateOutput } from '../three/scene.js'
 import { sheetDimensions, stackedDimensions, MAX_CANVAS_DIM } from '../three/spritesheet.js'
 import { directionLabel } from '../three/captureCamera.js'
+import { buildLayers, selectedGroups } from '../three/layers.js'
 
 // Side-panel section: turn the current model + motion into packed spritesheet(s)
 // and/or a zip of individual frames — one capture pass feeds every output. Can
@@ -13,6 +14,9 @@ export default function OutputPanel() {
   const duration = useStore((s) => s.duration)
   const angleCount = useStore((s) => s.captureAngleCount)
   const angleIndex = useStore((s) => s.captureAngleIndex)
+  const layerEnabled = useStore((s) => s.layerExportEnabled)
+  const layerSelection = useStore((s) => s.layerSelection)
+  const layerCombined = useStore((s) => s.layerCombined)
 
   const [cellSize, setCellSize] = useState(256)
   const [frameCount, setFrameCount] = useState(12)
@@ -55,11 +59,19 @@ export default function OutputPanel() {
     ? Array.from({ length: angleCount }, (_, i) => i)
     : [angleIndex]
 
+  // Which parts to isolate (Phase 5). Resolved from the Layers panel selection.
+  const allLayers = buildLayers(modelInfo.meshes || [])
+  const layerGroups = selectedGroups(allLayers, layerSelection)
+  const layered = layerEnabled && layerGroups.length > 0
+  const targetCount = layered
+    ? layerGroups.length + (layerCombined && layerGroups.length > 1 ? 1 : 0)
+    : 1
+
   async function onGenerate() {
     if (busy || tooBig || noOutput) return
     setBusy(true)
     setMsg(null)
-    setProgress({ done: 0, total: effectiveFrames * dirCount })
+    setProgress({ done: 0, total: effectiveFrames * dirCount * targetCount })
     try {
       const res = await generateOutput(
         {
@@ -68,6 +80,7 @@ export default function OutputPanel() {
           columns,
           angleIndices,
           angleLayout: layout,
+          layers: { enabled: layered, groups: layerGroups, combined: layerCombined },
           name: modelInfo.name || 'sprites',
           outputs: { sheet: wantSheet, frames: wantFrames },
         },
@@ -76,14 +89,16 @@ export default function OutputPanel() {
       setPreview(res.preview)
       const parts = []
       if (res.wroteSheet) {
-        if (allDirections) parts.push(usingStacked ? 'stacked sheet PNG + JSON' : 'per-direction sheets zip')
+        if (res.layers > 1) parts.push('per-layer sheets zip')
+        else if (allDirections) parts.push(usingStacked ? 'stacked sheet PNG + JSON' : 'per-direction sheets zip')
         else parts.push('spritesheet PNG + JSON')
       }
-      if (res.wroteFrames) parts.push('frames zip')
+      if (res.wroteFrames) parts.push(res.layers > 1 ? 'per-layer frames zip' : 'frames zip')
       const where = allDirections
         ? `${res.angles} directions`
         : directionLabel(angleIndex, angleCount)
-      setMsg(`Saved ${res.count} frame(s) × ${where}: ${parts.join(' + ')}.`)
+      const layerTxt = res.layers > 1 ? ` × ${res.layers} layers` : ''
+      setMsg(`Saved ${res.count} frame(s) × ${where}${layerTxt}: ${parts.join(' + ')}.`)
     } catch (err) {
       setMsg(err.message || String(err))
     } finally {
@@ -197,6 +212,15 @@ export default function OutputPanel() {
           {allDirections ? `${angleCount} (all)` : directionLabel(angleIndex, angleCount)}
         </span>
       </div>
+      {layered && (
+        <div className="info-row">
+          <span>Layers</span>
+          <span>
+            {targetCount} ({layerGroups.length} part{layerGroups.length === 1 ? '' : 's'}
+            {layerCombined && layerGroups.length > 1 ? ' + combined' : ''})
+          </span>
+        </div>
+      )}
       {wantSheet && (
         <div className="info-row">
           <span>{usingStacked ? 'Sheet size' : allDirections ? 'Each sheet' : 'Sheet size'}</span>

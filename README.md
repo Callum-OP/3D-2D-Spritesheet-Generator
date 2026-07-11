@@ -57,7 +57,12 @@ npm run preview    # serve the production build locally
 src/
   App.jsx               # layout: viewport + control sidebar
   store.js              # Zustand store (UI + model state)
+  components/           # shared UI widgets (e.g. click-to-edit Slider)
   three/                # scene, model loading, materials, outline, posing,
-                        # animation, BVH import/retarget (the reusable engine)
-  panels/               # Model / Material (style) / Animation / Bone / View / Export
+                        # animation, BVH import/retarget, plus the sprite pipeline:
+                        # captureCamera (frozen ortho rig), layers (mesh grouping),
+                        # spritesheet (grid/stacked packing)
+  export/               # zip.js — bundle frames + manifests (fflate)
+  panels/               # Model / Material (style) / Animation / Bone / Capture /
+                        # Layers / Spritesheet (output) / View / Export
 ```

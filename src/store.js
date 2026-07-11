@@ -36,6 +36,11 @@ export const useStore = create((set) => ({
       captureAngleIndex: 0,
       capturePreview: false,
       modelFacing: 0,
+      // Reset layer-export selection for the new model (layers are re-derived).
+      layerExportEnabled: false,
+      layerSelection: {},
+      layerCombined: true,
+      layerSoloId: null,
       // The character is a movable entry (kept first) in the objects list.
       sceneObjects: [
         { id: 'character', name: modelInfo.name, isCharacter: true },
@@ -103,6 +108,26 @@ export const useStore = create((set) => ({
   setCapturePreview: (capturePreview) => set({ capturePreview }),
   setShowAngleGuides: (showAngleGuides) => set({ showAngleGuides }),
   setModelFacing: (modelFacing) => set({ modelFacing }),
+
+  // ---- Layer export (Phase 5) ----
+  // Export each model "part" (body, clothes, hat…) as its own aligned sheet,
+  // all sharing the frozen capture camera so they overlay pixel-for-pixel.
+  layerExportEnabled: false, // off => single combined capture (Phase 4 behaviour)
+  layerSelection: {}, // { [layerId]: bool }; absent entry = selected (export it)
+  layerCombined: true, // also emit one sheet with every selected layer visible
+  layerSoloId: null, // layer being solo-previewed in the live viewport (or null)
+
+  setLayerExportEnabled: (layerExportEnabled) => set({ layerExportEnabled }),
+  setLayerCombined: (layerCombined) => set({ layerCombined }),
+  setLayerSoloId: (layerSoloId) => set({ layerSoloId }),
+  setLayerSelected: (id, selected) =>
+    set((s) => ({ layerSelection: { ...s.layerSelection, [id]: selected } })),
+  setAllLayersSelected: (ids, selected) =>
+    set(() => {
+      const layerSelection = {}
+      for (const id of ids) layerSelection[id] = selected
+      return { layerSelection }
+    }),
 
   // ---- Material mode (Phase 2) ----
   // 'unlit' is the default: raw base colour, no lighting — matches Blender's
