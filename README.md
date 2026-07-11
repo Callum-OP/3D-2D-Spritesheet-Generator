@@ -61,7 +61,3 @@ src/
                         # animation, BVH import/retarget (the reusable engine)
   panels/               # Model / Material (style) / Animation / Bone / View / Export
 ```
-
-## License
-
-Private / unpublished.
