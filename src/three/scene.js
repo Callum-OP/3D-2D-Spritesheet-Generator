@@ -93,7 +93,11 @@ const state = {
   shadowMap: false, // real shadow mapping vs blob
   dirLight: null,
   ambientLight: null,
-  lightDir: new THREE.Vector3(0.3, 0.6, 0.7), // unit direction to the key light
+  lightDir: new THREE.Vector3(0.3, 0.6, 0.7), // unit direction to the key light (base)
+  // Extra yaw (radians) applied to the key light so it tracks the capture camera,
+  // keeping every direction lit from the same screen-relative angle. 0 = world-fixed
+  // (free orbit / following disabled); set per capture direction otherwise.
+  captureLightYawRad: 0,
   modelCenter: new THREE.Vector3(0, 1, 0),
   modelRadius: 1, // ~max model dimension, for light distance + shadow camera
 
@@ -529,6 +533,7 @@ export function setCaptureAngle(i) {
   state.captureAngle = i
   if (!getRig()) fitCaptureRig()
   setAngleIndex(i)
+  if (state.captureMode) applyCaptureLight(i) // keep the preview lit consistently
   requestRender()
 }
 
@@ -543,8 +548,10 @@ export function setCaptureMode(on) {
     const h = state.container?.clientHeight || 1
     applyFrustum(w / h)
     setAngleIndex(state.captureAngle)
+    applyCaptureLight(state.captureAngle) // light follows the previewed direction
     if (state.controls) state.controls.enabled = false
   } else {
+    applyCaptureLight(0) // world-fixed light again for free orbit
     if (state.controls) state.controls.enabled = true
   }
   requestRender()
@@ -662,6 +669,7 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, layers, onPro
       applyLayerVisibility(layers[L].uuids) // isolate this layer (visibility only)
       for (let a = 0; a < angleIndices.length; a++) {
         setAngleIndex(angleIndices[a]) // orbit only — frustum size unchanged
+        applyCaptureLight(angleIndices[a]) // match the light to this direction
         for (let i = 0; i < times.length; i++) {
           scrub(times[i]) // pose the rig at this time (no-op if nothing is armed)
           renderOnce() // synchronous draw; preserveDrawingBuffer keeps the pixels
@@ -698,6 +706,7 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, layers, onPro
     setBonesVisible(useStore.getState().showBones)
     if (prev.captureMode) applyFrustum(w0 / h0) // back to on-screen preview aspect
     setAngleIndex(state.captureAngle) // restore the previewed direction
+    applyCaptureLight(prev.captureMode ? state.captureAngle : 0) // restore the light
     scrub(useStore.getState().currentTime || 0) // leave the rig where the user had it
     requestRender()
   }
@@ -1279,15 +1288,55 @@ function placeShadowUnder(box) {
   positionLight()
 }
 
-// Position the key light along its direction, high and far enough out to cast
-// shadows across a generous area — not just the character's bounding box, so
-// props and root-motion movement stay shadowed. `r` ~ the model's max dimension.
+const _tmpLightDir = new THREE.Vector3()
+
+// The key-light direction actually used to place the light: the base direction
+// (state.lightDir) rotated about the vertical axis by state.captureLightYawRad so
+// it follows the capture camera. Rotation sense matches the camera orbit (+Z→+X).
+function effectiveLightDir(target) {
+  const b = state.lightDir
+  const phi = state.captureLightYawRad || 0
+  if (!phi) return target.copy(b)
+  const c = Math.cos(phi)
+  const s = Math.sin(phi)
+  return target.set(b.x * c + b.z * s, b.y, -b.x * s + b.z * c)
+}
+
+// Yaw (radians) a following light gets for capture direction `index`: the pure
+// per-direction step, so direction 0 (the previewed Front) keeps the user's light
+// exactly as set, and each further direction rotates the light in lock-step with
+// the camera. Independent of the rig's base yaw (that offsets all directions
+// equally and is already baked into the model facing).
+function captureDirYawRad(index) {
+  const rig = getRig()
+  if (!rig || !rig.angleCount) return 0
+  return (index * 2 * Math.PI) / rig.angleCount
+}
+
+// Point the key light at capture direction `index` (or leave it world-fixed if the
+// "light follows camera" toggle is off), then reposition + redraw.
+function applyCaptureLight(index) {
+  const follow = useStore.getState().lightFollowsCapture !== false
+  state.captureLightYawRad = follow ? captureDirYawRad(index) : 0
+  positionLight()
+  requestRender()
+}
+
+// Store-driven toggle: re-aim the light for whatever direction is on screen.
+export function setLightFollowsCapture() {
+  applyCaptureLight(state.captureMode ? useStore.getState().captureAngleIndex : 0)
+}
+
+// Position the key light along its (possibly camera-following) direction, high and
+// far enough out to cast shadows across a generous area — not just the character's
+// bounding box, so props and root-motion movement stay shadowed. `r` ~ max dim.
 function positionLight() {
   const dl = state.dirLight
   if (!dl) return
   const r = state.modelRadius
   const dist = Math.max(10, r * 6) // high & far so the frustum sits above the scene
-  dl.position.copy(state.modelCenter).addScaledVector(state.lightDir, dist)
+  const dir = effectiveLightDir(_tmpLightDir)
+  dl.position.copy(state.modelCenter).addScaledVector(dir, dist)
   dl.target.position.copy(state.modelCenter)
   dl.target.updateMatrixWorld()
 

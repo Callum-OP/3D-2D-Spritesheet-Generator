@@ -9,6 +9,7 @@ import {
   setShadowMapping,
   applyModelMaterials,
   setLightSettings,
+  setLightFollowsCapture,
   setOutlineToggle,
 } from './scene.js'
 import { useStore } from '../store.js'
@@ -71,6 +72,12 @@ export default function Viewport() {
   useEffect(() => {
     setLightSettings(lightIntensity, lightAzimuth, lightElevation)
   }, [lightIntensity, lightAzimuth, lightElevation])
+
+  const lightFollowsCapture = useStore((s) => s.lightFollowsCapture)
+
+  useEffect(() => {
+    setLightFollowsCapture(lightFollowsCapture)
+  }, [lightFollowsCapture])
 
   const outlineEnabled = useStore((s) => s.outlineEnabled)
 

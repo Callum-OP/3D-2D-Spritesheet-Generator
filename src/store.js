@@ -10,6 +10,7 @@ export const SETTINGS_KEYS = [
   'modelFacing', 'showAngleGuides',
   // Style (material / light / outline / soften)
   'materialMode', 'toonSteps', 'lightIntensity', 'lightAzimuth', 'lightElevation',
+  'lightFollowsCapture',
   'outlineEnabled', 'outlineWidth', 'softenEnabled', 'softenAmount',
   // Layers
   'layerExportEnabled', 'layerCombined',
@@ -197,10 +198,15 @@ export const useStore = create((set) => ({
   lightIntensity: 2.0,
   lightAzimuth: 35, // degrees around the model (0 = front, +ve = to the right)
   lightElevation: 45, // degrees above the horizon
+  // Rotate the key light with the capture camera so every direction is lit from
+  // the same screen-relative angle (front-lit sprite stays front-lit when shot
+  // from the back). On by default; turn off for a world-fixed light.
+  lightFollowsCapture: true,
 
   setLightIntensity: (lightIntensity) => set({ lightIntensity }),
   setLightAzimuth: (lightAzimuth) => set({ lightAzimuth }),
   setLightElevation: (lightElevation) => set({ lightElevation }),
+  setLightFollowsCapture: (lightFollowsCapture) => set({ lightFollowsCapture }),
 
   // ---- Outline (inverted-hull, works in every material mode) ----
   outlineEnabled: false,

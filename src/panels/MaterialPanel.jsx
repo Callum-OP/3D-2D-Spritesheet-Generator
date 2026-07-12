@@ -33,6 +33,7 @@ export default function MaterialPanel() {
   const lightIntensity = useStore((s) => s.lightIntensity)
   const lightAzimuth = useStore((s) => s.lightAzimuth)
   const lightElevation = useStore((s) => s.lightElevation)
+  const lightFollowsCapture = useStore((s) => s.lightFollowsCapture)
 
   const outlineEnabled = useStore((s) => s.outlineEnabled)
   const outlineWidth = useStore((s) => s.outlineWidth)
@@ -45,6 +46,7 @@ export default function MaterialPanel() {
   const setLightIntensity = useStore((s) => s.setLightIntensity)
   const setLightAzimuth = useStore((s) => s.setLightAzimuth)
   const setLightElevation = useStore((s) => s.setLightElevation)
+  const setLightFollowsCapture = useStore((s) => s.setLightFollowsCapture)
   const setOutlineEnabled = useStore((s) => s.setOutlineEnabled)
   const setOutlineWidth = useStore((s) => s.setOutlineWidth)
   const setSoftenEnabled = useStore((s) => s.setSoftenEnabled)
@@ -146,6 +148,17 @@ export default function MaterialPanel() {
           onChange={setLightElevation}
           format={(v) => v + '°'}
         />
+
+        <label className="toggle-row" style={{ padding: 0, marginTop: 6 }}
+          title="Rotate the light with the capture camera so every direction is lit the same way (front-lit sprites stay front-lit from every angle)">
+          <input
+            type="checkbox"
+            checked={lightFollowsCapture}
+            disabled={!lit}
+            onChange={(e) => setLightFollowsCapture(e.target.checked)}
+          />
+          Light follows camera
+        </label>
       </div>
 
       <div className="light-controls">
