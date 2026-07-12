@@ -96,7 +96,7 @@ export const useStore = create((set) => ({
   solidBackground: false, // false = transparent (the default, for compositing)
   backgroundColor: '#202127',
   showShadow: true, // ground shadow on/off
-  shadowMapping: false, // true = real cast shadows; false = cheap blob
+  shadowMapping: true, // true = real cast shadows (default); false = cheap blob
   showStats: false, // FPS / memory readout overlay (Phase 6 polish)
   showHelp: false, // help & shortcuts overlay
 

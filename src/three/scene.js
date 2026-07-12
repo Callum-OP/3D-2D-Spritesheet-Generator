@@ -626,12 +626,14 @@ export function previewLayerSolo(uuids) {
 
 // Render every sampled frame, for each requested LAYER and direction, through
 // the frozen ortho camera into its own square canvas at exactly `cellSize` px.
-// Helpers (grid/shadow/guides/bones) and any solid background are hidden so
-// sprites come out clean and transparent, then everything is restored. The
-// camera frustum is frozen throughout and only ORBITS between directions — and
-// layers differ ONLY by which meshes are visible — so every layer/direction's
-// cells align pixel-for-pixel. Yields to the event loop between frames so a
-// progress bar can update.
+// Helpers (grid/guides/bones) and any solid background are hidden so sprites come
+// out clean and transparent, then everything is restored. The ground shadow is
+// kept when enabled — but only on full/standalone renders, since an isolated part
+// layer carrying its own shadow would darken it multiple times once the layers are
+// overlaid. The camera frustum is frozen throughout and only ORBITS between
+// directions — and layers differ ONLY by which meshes are visible — so every
+// layer/direction's cells align pixel-for-pixel. Yields to the event loop between
+// frames so a progress bar can update.
 //
 // `layers` is [{ key, label, uuids: Set|null }]. Returns
 // HTMLCanvasElement[layerIndex][angleIndex] = frame canvases.
@@ -645,16 +647,13 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, layers, onPro
     captureMode: state.captureMode,
     background: scene.background,
     grid: state.gridHelper ? state.gridHelper.visible : null,
-    shadow: state.shadow ? state.shadow.visible : null,
-    receiver: state.shadowReceiver ? state.shadowReceiver.visible : null,
   }
 
   // --- Set up a clean, square, transparent capture ---
   state.captureMode = true // route renderOnce through the ortho capture camera
   scene.background = null // transparent sprite cells regardless of the Scene toggle
   if (state.gridHelper) state.gridHelper.visible = false
-  if (state.shadow) state.shadow.visible = false
-  if (state.shadowReceiver) state.shadowReceiver.visible = false
+  setCaptureShadowVisible(false) // start hidden; enabled per-layer below
   setGuidesVisible(false)
   setBonesVisible(false)
   applyFrustum(1) // exact square — the real capture, not the preview aspect
@@ -667,6 +666,10 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, layers, onPro
   try {
     for (let L = 0; L < layers.length; L++) {
       applyLayerVisibility(layers[L].uuids) // isolate this layer (visibility only)
+      // Shadow only on a full/standalone render (everything visible, or the
+      // "combined" layer) — never on an isolated part meant to be overlaid.
+      const standalone = layers[L].uuids === null || layers[L].key === 'combined'
+      setCaptureShadowVisible(standalone)
       for (let a = 0; a < angleIndices.length; a++) {
         setAngleIndex(angleIndices[a]) // orbit only — frustum size unchanged
         applyCaptureLight(angleIndices[a]) // match the light to this direction
@@ -700,8 +703,7 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, layers, onPro
     state.captureMode = prev.captureMode
     scene.background = prev.background
     if (state.gridHelper) state.gridHelper.visible = prev.grid
-    if (state.shadow) state.shadow.visible = prev.shadow
-    if (state.shadowReceiver) state.shadowReceiver.visible = prev.receiver
+    applyShadowMode() // restore live ground-shadow visibility (blob/real per toggle)
     setGuidesVisible(useStore.getState().showAngleGuides)
     setBonesVisible(useStore.getState().showBones)
     if (prev.captureMode) applyFrustum(w0 / h0) // back to on-screen preview aspect
@@ -1382,6 +1384,16 @@ function applyShadowMode() {
   if (state.shadowReceiver) state.shadowReceiver.visible = realOn
   if (state.dirLight) state.dirLight.castShadow = realOn
   requestRender()
+}
+
+// Show/hide the ground shadow during a capture pass, honouring the live blob-vs-
+// real mode. `on` is gated by the master shadow toggle, so shadows never appear in
+// sprites when the user has them off. Doesn't touch dirLight.castShadow (left as
+// applyShadowMode set it) or call requestRender (the capture loop draws itself).
+function setCaptureShadowVisible(on) {
+  const show = on && state.shadowOn
+  if (state.shadow) state.shadow.visible = show && !state.shadowMap
+  if (state.shadowReceiver) state.shadowReceiver.visible = show && state.shadowMap
 }
 
 // A soft radial gradient used as the blob-shadow texture (opaque centre → clear
