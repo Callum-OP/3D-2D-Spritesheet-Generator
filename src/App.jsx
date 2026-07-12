@@ -5,6 +5,7 @@ import BonePanel from './panels/BonePanel.jsx'
 import AnimationPanel from './panels/AnimationPanel.jsx'
 import CapturePanel from './panels/CapturePanel.jsx'
 import LayersPanel from './panels/LayersPanel.jsx'
+import PresetsPanel from './panels/PresetsPanel.jsx'
 import OutputPanel from './panels/OutputPanel.jsx'
 import ExportPanel from './panels/ExportPanel.jsx'
 import ViewPanel from './panels/ViewPanel.jsx'
@@ -33,6 +34,7 @@ export default function App() {
         <BonePanel />
         <CapturePanel />
         <LayersPanel />
+        <PresetsPanel />
         <OutputPanel />
         <ViewPanel />
         <ExportPanel />

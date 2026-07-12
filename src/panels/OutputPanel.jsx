@@ -1,9 +1,22 @@
 import { useState } from 'react'
 import { useStore } from '../store.js'
-import { generateOutput } from '../three/scene.js'
+import { generateOutput, cancelGeneration, isCaptureCancelled } from '../three/scene.js'
 import { sheetDimensions, stackedDimensions, MAX_CANVAS_DIM } from '../three/spritesheet.js'
 import { directionLabel } from '../three/captureCamera.js'
 import { buildLayers, selectedGroups } from '../three/layers.js'
+
+// Rough memory the capture holds at once: every frame canvas (RGBA) is kept in
+// memory until it's packed/zipped. Warn past ~512 MB, block past ~2 GB so a huge
+// angles×frames×layers×cell² combo can't hard-crash the tab.
+const BYTES_PER_PX = 4
+const MEM_WARN = 512 * 1024 * 1024
+const MEM_BLOCK = 2 * 1024 * 1024 * 1024
+
+function formatBytes(n) {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`
+  if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MB`
+  return `${Math.round(n / 1024)} KB`
+}
 
 // Side-panel section: turn the current model + motion into packed spritesheet(s)
 // and/or a zip of individual frames — one capture pass feeds every output. Can
@@ -18,13 +31,22 @@ export default function OutputPanel() {
   const layerSelection = useStore((s) => s.layerSelection)
   const layerCombined = useStore((s) => s.layerCombined)
 
-  const [cellSize, setCellSize] = useState(256)
-  const [frameCount, setFrameCount] = useState(12)
-  const [columns, setColumns] = useState(6)
-  const [scope, setScope] = useState('current') // 'current' | 'all'
-  const [layout, setLayout] = useState('stacked') // 'stacked' | 'separate' (all only)
-  const [wantSheet, setWantSheet] = useState(true)
-  const [wantFrames, setWantFrames] = useState(false)
+  // Output settings live in the store (Phase 6) so presets + save/load reach them.
+  const cellSize = useStore((s) => s.outCellSize)
+  const frameCount = useStore((s) => s.outFrameCount)
+  const columns = useStore((s) => s.outColumns)
+  const scope = useStore((s) => s.outScope)
+  const layout = useStore((s) => s.outAngleLayout)
+  const wantSheet = useStore((s) => s.outWantSheet)
+  const wantFrames = useStore((s) => s.outWantFrames)
+  const setCellSize = useStore((s) => s.setOutCellSize)
+  const setFrameCount = useStore((s) => s.setOutFrameCount)
+  const setColumns = useStore((s) => s.setOutColumns)
+  const setScope = useStore((s) => s.setOutScope)
+  const setLayout = useStore((s) => s.setOutAngleLayout)
+  const setWantSheet = useStore((s) => s.setOutWantSheet)
+  const setWantFrames = useStore((s) => s.setOutWantFrames)
+
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState(null) // { done, total }
   const [preview, setPreview] = useState(null)
@@ -67,8 +89,14 @@ export default function OutputPanel() {
     ? layerGroups.length + (layerCombined && layerGroups.length > 1 ? 1 : 0)
     : 1
 
+  // Peak memory the run will hold (all frame canvases at once).
+  const totalFrames = effectiveFrames * dirCount * targetCount
+  const estBytes = totalFrames * cellSize * cellSize * BYTES_PER_PX
+  const memBlock = estBytes > MEM_BLOCK
+  const memWarn = !memBlock && estBytes > MEM_WARN
+
   async function onGenerate() {
-    if (busy || tooBig || noOutput) return
+    if (busy || tooBig || noOutput || memBlock) return
     setBusy(true)
     setMsg(null)
     setProgress({ done: 0, total: effectiveFrames * dirCount * targetCount })
@@ -100,7 +128,7 @@ export default function OutputPanel() {
       const layerTxt = res.layers > 1 ? ` × ${res.layers} layers` : ''
       setMsg(`Saved ${res.count} frame(s) × ${where}${layerTxt}: ${parts.join(' + ')}.`)
     } catch (err) {
-      setMsg(err.message || String(err))
+      setMsg(isCaptureCancelled(err) ? 'Cancelled — nothing was saved.' : err.message || String(err))
     } finally {
       setBusy(false)
       setProgress(null)
@@ -231,25 +259,55 @@ export default function OutputPanel() {
         </div>
       )}
 
+      <div className="info-row">
+        <span>Total frames</span>
+        <span>{totalFrames}</span>
+      </div>
+      <div className="info-row">
+        <span>Est. memory</span>
+        <span style={{ color: memBlock ? '#ff8080' : memWarn ? '#ffc234' : undefined }}>
+          ~{formatBytes(estBytes)}
+        </span>
+      </div>
+
       {tooBig && (
         <p className="panel-hint" style={{ color: '#ff8080' }}>
           Too large — browsers cap canvases near {MAX_CANVAS_DIM}px. Reduce the cell
           size{usingStacked ? ', fewer directions,' : ''} or use more columns.
         </p>
       )}
+      {memBlock && (
+        <p className="panel-hint" style={{ color: '#ff8080' }}>
+          This would allocate ~{formatBytes(estBytes)} of frames at once and likely
+          crash the tab. Reduce cell size, frames, directions or layers.
+        </p>
+      )}
+      {memWarn && (
+        <p className="panel-hint" style={{ color: '#ffc234' }}>
+          Heads up — this holds ~{formatBytes(estBytes)} of frames in memory. It may
+          be slow on lower-end machines.
+        </p>
+      )}
 
-      <button
-        className="btn"
-        style={{ marginTop: 8 }}
-        onClick={onGenerate}
-        disabled={busy || tooBig || noOutput}
-      >
-        {busy
-          ? progress
-            ? `Rendering ${progress.done}/${progress.total}…`
-            : 'Working…'
-          : 'Generate'}
-      </button>
+      <div className="scrub-row" style={{ marginTop: 8 }}>
+        <button
+          className="btn"
+          style={{ flex: 1 }}
+          onClick={onGenerate}
+          disabled={busy || tooBig || noOutput || memBlock}
+        >
+          {busy
+            ? progress
+              ? `Rendering ${progress.done}/${progress.total}…`
+              : 'Working…'
+            : 'Generate'}
+        </button>
+        {busy && (
+          <button className="btn secondary" onClick={() => cancelGeneration()} title="Stop the capture">
+            Cancel
+          </button>
+        )}
+      </div>
 
       {msg && <div className="pose-msg">{msg}</div>}
 

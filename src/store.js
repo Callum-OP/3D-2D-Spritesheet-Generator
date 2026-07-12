@@ -1,5 +1,32 @@
 import { create } from 'zustand'
 
+// Serializable, model-agnostic settings keys — the subset saved/loaded as JSON
+// and driven by presets (Phase 6). Per-model maps (meshOverrides, layerSelection)
+// are deliberately excluded: their keys are tied to a specific load and wouldn't
+// map onto a different model.
+export const SETTINGS_KEYS = [
+  // Capture rig
+  'captureAngleCount', 'captureElevation', 'capturePadding', 'captureProjection',
+  'modelFacing', 'showAngleGuides',
+  // Style (material / light / outline / soften)
+  'materialMode', 'toonSteps', 'lightIntensity', 'lightAzimuth', 'lightElevation',
+  'outlineEnabled', 'outlineWidth', 'softenEnabled', 'softenAmount',
+  // Layers
+  'layerExportEnabled', 'layerCombined',
+  // Output
+  'outCellSize', 'outFrameCount', 'outColumns', 'outScope', 'outAngleLayout',
+  'outWantSheet', 'outWantFrames',
+  // Misc export
+  'exportScale',
+]
+
+// Snapshot just the serializable settings from a store state (for save/preset).
+export function pickSettings(state) {
+  const out = {}
+  for (const k of SETTINGS_KEYS) out[k] = state[k]
+  return out
+}
+
 // Central app state. Only serializable / UI-facing data lives here.
 // The heavy Three.js objects (scene, meshes, skeleton) are deliberately kept
 // OUT of the store — they live in the scene manager (src/three/scene.js) and
@@ -127,6 +154,34 @@ export const useStore = create((set) => ({
       const layerSelection = {}
       for (const id of ids) layerSelection[id] = selected
       return { layerSelection }
+    }),
+
+  // ---- Output settings (Phase 6) ----
+  // Lifted out of OutputPanel's local state so presets, save/load and the memory
+  // guardrail can all read and write them uniformly.
+  outCellSize: 256, // px per frame cell
+  outFrameCount: 12, // frames sampled across the motion
+  outColumns: 6, // grid columns in a packed sheet
+  outScope: 'current', // 'current' | 'all' directions
+  outAngleLayout: 'stacked', // 'stacked' | 'separate' (all-directions layout)
+  outWantSheet: true, // emit a packed spritesheet
+  outWantFrames: false, // emit a zip of individual frames
+
+  setOutCellSize: (outCellSize) => set({ outCellSize }),
+  setOutFrameCount: (outFrameCount) => set({ outFrameCount }),
+  setOutColumns: (outColumns) => set({ outColumns }),
+  setOutScope: (outScope) => set({ outScope }),
+  setOutAngleLayout: (outAngleLayout) => set({ outAngleLayout }),
+  setOutWantSheet: (outWantSheet) => set({ outWantSheet }),
+  setOutWantFrames: (outWantFrames) => set({ outWantFrames }),
+
+  // Bulk-apply a settings object (from a preset or a loaded JSON file). Only
+  // recognised keys are copied; everything else is ignored.
+  applySettings: (obj) =>
+    set(() => {
+      const next = {}
+      for (const k of SETTINGS_KEYS) if (obj && k in obj) next[k] = obj[k]
+      return next
     }),
 
   // ---- Material mode (Phase 2) ----

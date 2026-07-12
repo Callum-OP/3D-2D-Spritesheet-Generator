@@ -504,6 +504,20 @@ export function setModelFacing(deg) {
   fitCaptureRig()
 }
 
+// Re-apply every CAPTURE setting from the store in one go — used after a bulk
+// change (a preset or a loaded settings file). Material/light/outline settings
+// re-apply on their own through the Viewport's store effects, but the capture
+// rig is driven imperatively, so it needs this nudge.
+export function syncCaptureFromStore() {
+  if (!state.currentModel) return
+  const s = useStore.getState()
+  state.currentModel.root.rotation.y = (s.modelFacing * Math.PI) / 180
+  state.currentModel.root.updateMatrixWorld(true)
+  fitCaptureRig() // reads angleCount / elevation / padding from the store
+  setGuidesVisible(s.showAngleGuides)
+  requestRender()
+}
+
 // The absolute times (seconds) to sample for a `count`-frame capture of the
 // current motion. A looping clip samples [0, duration) so the wrap frame isn't
 // duplicated; a static model collapses to a single frame at t=0.
@@ -584,6 +598,7 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, layers, onPro
   applyFrustum(1) // exact square — the real capture, not the preview aspect
   renderer.setSize(cellSize, cellSize, false) // bigger/smaller buffer, keep CSS size
 
+  state.captureCancel = false // fresh cancel flag for this run
   const framesByLayer = layers.map(() => angleIndices.map(() => []))
   const total = layers.length * angleIndices.length * times.length
   let done = 0
@@ -603,6 +618,9 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, layers, onPro
           done++
           if (onProgress) onProgress(done, total)
           await new Promise((r) => setTimeout(r, 0)) // let the UI breathe
+          // Cancelling throws here (before any file is written), so a run is
+          // either fully downloaded or produces nothing.
+          if (state.captureCancel) throw new Error('CAPTURE_CANCELLED')
         }
       }
     }
@@ -628,6 +646,17 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, layers, onPro
 // Turn a direction label into a filesystem-safe slug ("Side (E)" -> "Side_E").
 function slugLabel(s) {
   return String(s).replace(/[^\w]+/g, '_').replace(/^_+|_+$/g, '') || 'dir'
+}
+
+// True when an in-flight generateOutput() was cancelled by the user.
+export function isCaptureCancelled(err) {
+  return !!err && err.message === 'CAPTURE_CANCELLED'
+}
+
+// Ask the running capture loop to stop at the next frame boundary. No effect if
+// nothing is capturing.
+export function cancelGeneration() {
+  state.captureCancel = true
 }
 
 // Full pipeline: capture the current motion across one or more directions — and

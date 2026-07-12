@@ -26,7 +26,10 @@ npm run dev        # start the Vite dev server (prints a local URL)
 > `NODE_OPTIONS=--use-system-ca npm install`.
 
 Then open the printed URL and drag a model file onto the viewport (or use
-**Load**). Pick a look in **Style**, add motion in **Animation**, and export.
+**Load**). Pick a look in **Style**, add motion in **Animation**, aim the
+**Capture** camera, then **Generate** a spritesheet. Can also hit a **Preset**
+(e.g. *8-dir 512 toon*) and press **Generate** — and **Save/Load settings** to
+reuse a setup later.
 
 ### Other scripts
 
@@ -56,7 +59,8 @@ npm run preview    # serve the production build locally
 ```
 src/
   App.jsx               # layout: viewport + control sidebar
-  store.js              # Zustand store (UI + model state)
+  store.js              # Zustand store (UI + model state) + settings save/load keys
+  presets.js            # one-click capture/style/output presets
   components/           # shared UI widgets (e.g. click-to-edit Slider)
   three/                # scene, model loading, materials, outline, posing,
                         # animation, BVH import/retarget, plus the sprite pipeline:
@@ -64,5 +68,5 @@ src/
                         # spritesheet (grid/stacked packing)
   export/               # zip.js — bundle frames + manifests (fflate)
   panels/               # Model / Material (style) / Animation / Bone / Capture /
-                        # Layers / Spritesheet (output) / View / Export
+                        # Layers / Presets / Spritesheet (output) / View / Export
 ```
