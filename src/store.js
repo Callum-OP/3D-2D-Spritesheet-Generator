@@ -162,7 +162,7 @@ export const useStore = create((set) => ({
   outCellSize: 256, // px per frame cell
   outFrameCount: 12, // frames sampled across the motion
   outColumns: 6, // grid columns in a packed sheet
-  outScope: 'current', // 'current' | 'all' directions
+  outScope: 'all', // 'current' | 'all' directions — default to capturing every angle
   outAngleLayout: 'stacked', // 'stacked' | 'separate' (all-directions layout)
   outWantSheet: true, // emit a packed spritesheet
   outWantFrames: false, // emit a zip of individual frames

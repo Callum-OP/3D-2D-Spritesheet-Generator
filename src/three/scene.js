@@ -407,38 +407,93 @@ export function getCharacterRootTransform() {
 // orbit angle, so scale/framing never change frame-to-frame or layer-to-layer.
 // ---------------------------------------------------------------------------
 
-// Build the union bounding box the capture frustum must contain: the model's rest
-// extents plus the envelope its bones sweep through over the animation. (Skinned-
-// mesh AABBs don't reflect the deformed pose, so we track bone world positions —
-// which DO move — and let padding cover the flesh around them.)
+// Max deformed vertices we skin per sample across all skinned meshes. Sampling a
+// dense mesh every frame is wasteful; a few thousand well-spread vertices already
+// pin down the silhouette's extremes (fingertips, toes) to within a pixel. If a
+// model has more, we stride over its vertices to stay within this budget.
+const BOUNDS_VERTEX_BUDGET = 12000
+
+// Build the union bounding box the capture frustum must contain: the true DEFORMED
+// mesh extent across the whole animation and (implicitly) every orbit angle.
+//
+// Bone joint positions alone are not enough — a hand or foot juts well past its
+// wrist/ankle bone, so fitting to joints clips fully-stretched limbs no matter how
+// much padding is added. Instead we skin the actual mesh vertices at each sample
+// (SkinnedMesh.applyBoneTransform gives the posed position) so the box contains the
+// real flesh: hands, feet, and everything in between.
 function unionBoxOverMotion() {
   const box = new THREE.Box3()
   const model = state.currentModel
   if (!model) return box
   const root = model.root
 
-  box.setFromObject(root) // baseline: rest-pose mesh extents
-
+  const skinned = model.skinnedMeshes || []
+  const meshes = model.meshes || []
   const bones = model.bones || []
   const dur = useStore.getState().duration || 0
+
+  // Precompute a per-mesh vertex stride so the total skinned per sample stays under
+  // the budget. Strided sampling always includes the last index so tips aren't lost.
+  const totalVerts = skinned.reduce((n, m) => n + (m.geometry?.attributes?.position?.count || 0), 0)
+  const stride = Math.max(1, Math.ceil(totalVerts / BOUNDS_VERTEX_BUDGET))
+
+  const local = new THREE.Vector3()
+  const world = new THREE.Vector3()
   const v = new THREE.Vector3()
-  const addBonesAt = () => {
+
+  // Expand the box by the real posed geometry at the CURRENT rig pose. Assumes
+  // world matrices are already up to date for this pose.
+  const addPoseExtents = () => {
+    // Deformed (skinned) vertices — the accurate silhouette.
+    for (const mesh of skinned) {
+      const pos = mesh.geometry?.attributes?.position
+      if (!pos) continue
+      const count = pos.count
+      for (let i = 0; i < count; i += stride) {
+        local.fromBufferAttribute(pos, i)
+        mesh.applyBoneTransform(i, local) // -> mesh-local deformed position
+        world.copy(local).applyMatrix4(mesh.matrixWorld) // -> world position
+        box.expandByPoint(world)
+      }
+      // Always include the final vertex so an extremity isn't missed by the stride.
+      if ((count - 1) % stride !== 0 && count > 0) {
+        local.fromBufferAttribute(pos, count - 1)
+        mesh.applyBoneTransform(count - 1, local)
+        box.expandByPoint(world.copy(local).applyMatrix4(mesh.matrixWorld))
+      }
+    }
+    // Non-skinned meshes (static props, weapons parented to bones) — rigid, so
+    // their world AABB is exact. Skip skinned meshes here (handled above).
+    for (const mesh of meshes) {
+      if (mesh.isSkinnedMesh || !mesh.geometry) continue
+      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox()
+      box.union(_tmpBox.copy(mesh.geometry.boundingBox).applyMatrix4(mesh.matrixWorld))
+    }
+    // Bones too — cheap, and guarantees the box never collapses if a mesh is hidden.
     for (const b of bones) box.expandByPoint(b.getWorldPosition(v))
   }
 
-  if (dur > 0 && bones.length) {
+  if (dur > 0 && (skinned.length || bones.length)) {
     const SAMPLES = 16
     const savedTime = useStore.getState().currentTime || 0
     for (let i = 0; i <= SAMPLES; i++) {
       scrub((i / SAMPLES) * dur) // pose the rig at this time (no-op if nothing armed)
-      addBonesAt()
+      root.updateMatrixWorld(true) // refresh bone/mesh matrices for skinning + AABBs
+      addPoseExtents()
     }
     scrub(savedTime) // leave the rig where the user had it
-  } else if (bones.length) {
-    addBonesAt()
+    root.updateMatrixWorld(true)
+  } else {
+    root.updateMatrixWorld(true)
+    addPoseExtents()
   }
+
+  // Fall back to the rest-pose extents if, somehow, nothing was added.
+  if (box.isEmpty()) box.setFromObject(root)
   return box
 }
+
+const _tmpBox = new THREE.Box3()
 
 // Recompute the frozen frustum + rebuild the angle guides from current settings.
 export function fitCaptureRig() {
@@ -613,7 +668,13 @@ async function renderSpriteFrames({ cellSize, times, angleIndices, layers, onPro
           const cell = document.createElement('canvas')
           cell.width = cellSize
           cell.height = cellSize
-          cell.getContext('2d').drawImage(renderer.domElement, 0, 0)
+          // The WebGL buffer is cellSize × devicePixelRatio on each side (the
+          // renderer's DPR is applied on top of setSize). Copy the FULL buffer
+          // scaled into the cell — drawing at natural size would keep only the
+          // top-left cellSize² and slice off the right/bottom edges (cropping
+          // outstretched hands/feet). The extra source pixels also supersample.
+          const src = renderer.domElement
+          cell.getContext('2d').drawImage(src, 0, 0, src.width, src.height, 0, 0, cellSize, cellSize)
           framesByLayer[L][a].push(cell)
           done++
           if (onProgress) onProgress(done, total)
